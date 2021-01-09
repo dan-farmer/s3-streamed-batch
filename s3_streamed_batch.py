@@ -14,9 +14,13 @@ to batch-submit log entries to a log storage/processing API
 import logging
 import os
 import zlib
+from itertools import chain, islice
+#from itertools import chain, islice, zip_longest
 import boto3
 
 COMPRESSED_CHUNK_SIZE_MIB=8     # Chunk size to read from S3 (MiB)
+HEADER_LINES=2                  # Number of header lines to discard (e.g. CSV header)
+PAGE_SIZE=1000                  # Number of lines in page/batch
 
 LOG = logging.getLogger(__name__)
 LOG.setLevel(os.environ.get('LOG_LEVEL', 'WARNING'))
@@ -32,6 +36,40 @@ def lambda_handler(event, context):
 
     line_iter = get_lines(bucket=event['Records'][0]['s3']['bucket']['name'],
                           key=event['Records'][0]['s3']['object']['key'])
+
+    # Discard header lines
+    for _ in range(HEADER_LINES):
+        next(line_iter)
+
+    for page_first_line in line_iter:
+        # Create an iterator for the next (n-1) lines using islice and chain this with the first
+        # line to get a page of (n) lines. The underlying line_iter will be iterated as we process
+        # each item in this page, so on the next pass of the outer for loop line_iter will have
+        # iterated (n) items.
+        for line in chain([page_first_line], islice(line_iter, PAGE_SIZE - 1)):
+            # Placeholder; Do something useful with the line here
+            print(line)
+
+    # Alternative method using a classic itertools 'grouper' recipe. This works by creating
+    # PAGE_SIZE repeated references to the line_iter object and 'zipping' them together (round-robin
+    # between them). The underlying line_iter will be iterated every time we iterate on one of the
+    # object references.
+    #
+    # Experimentally, this is less efficient than the chain method above with large page sizes (e.g.
+    # 1000).
+    #
+    # Pages will be padded to PAGE_SIZE with 'None' objects, so we must filter these out. The
+    # filtering makes this approximately equivalent to the following, but is a little faster as
+    # filter is implemented in C and more efficient than a generator expression:
+    #
+    # for page in itertools.zip_longest(*[iter(line_iter)]*PAGE_SIZE):
+    #     for line in (x for x in page if x):
+    #         print(line)
+
+    #for page in (filter(None, page) for page in zip_longest(*[iter(line_iter)]*PAGE_SIZE)):
+    #    for line in page:
+    #        # Placeholder; Do something useful with the line here
+    #        print(line)
 
 def get_lines(bucket, key):
     """
